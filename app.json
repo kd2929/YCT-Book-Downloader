@@ -1,0 +1,39 @@
+{
+  "name": "Yct book downloader",
+  "description": "Ebook Extractor Bot by Team SPY",
+  "logo": "https://lh3.googleusercontent.com/-HPcn7AqepNg/AAAAAAAAAAI/AAAAAAAAAAA/ALKGfknb1BkQiq-8_KUVOYcNAJ4swKivDQ/photo.jpg",
+  "keywords": ["python3", "telegram", "MusicBot", "telegram-bot", "pyrogram"],
+  "repository": "https://github.com/devgaganin/save_restricted-content-telegram-bot-repo",
+  "success_url": "https://devgagan.in",
+  "env": {
+    "API_ID": {
+      "description": "Get this value from https://my.telegram.org",
+      "value": "your_api_id_here",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Get this value from https://my.telegram.org",
+      "value": "your_api_hash_here",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "A Bot's token from Botfather",
+      "value": "your_bot_token_here",
+      "required": true
+    },
+    "CI_DATABASE": {
+      "description": "Put Database Code here (get it from Http Cookies Extractor)",
+      "value": "Put Database ",
+      "required": true
+    },
+    "CI_SESSION": {
+      "description": "Put CI_SESSION.",
+      "value": "CI_SESSION_here",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    { "url": "heroku/python" }
+  ],
+  "stack": "container"
+}
