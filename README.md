@@ -1,5 +1,5 @@
 # YCT-Book-Downloader-bot
-This repository will help you to download books and upload to you telegram via cookies
+This repository will help you to download books and upload to your telegram via cookies
 
 # Steps to use
 - Login in your browser look for `ci_database` and `ci_session` or your any cookies extractor extension
