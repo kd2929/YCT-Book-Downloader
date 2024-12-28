@@ -3,8 +3,9 @@ This repository will help you to download books and upload to your telegram via 
 
 # Steps to use
 - Login in your browser look for `ci_database` and `ci_session` or your any cookies extractor extension
-- now fill these in `main.py` at line no `84` after `=`
+- now fill these in `main.py` at line no `31&32` after `=`
 - Put your api_id , api_hash and bot_token in starting for bot to start
+- you can fill vars of database and session if expire by conmand `/cookie database session` from telegram directly 
 
 # How tp deploy
 ## On vps 
