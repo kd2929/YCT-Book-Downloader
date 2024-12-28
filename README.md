@@ -15,7 +15,8 @@ This repository will help you to download books and upload to your telegram via 
 - final `python main.py`
 
 ## On heroku 
-- Just connect repo and click deploy after filling vars
+- Just connect repo and click deploy after filling vars click belew to star deployment
+[DEPLOY NOW](https://heroku.com/deploy)
 
 # Thanks happy journey --- 
 
