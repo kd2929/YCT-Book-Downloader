@@ -26,10 +26,37 @@ user_tasks = {}
 executor = ThreadPoolExecutor(max_workers=5)
 
 # Step 1: Start command
+
+# Cookie configuration using environment variables
+CI_DATABASE = os.getenv("CI_DATABASE", "286dbaf9a7ca6c62546cddfac56833b3860f5c53")
+CI_SESSION = os.getenv("CI_SESSION", "880b1fcdd0d4b9e6cc88f979e217e3136184665b")
+
+
+def get_cookies():
+    return f"ci_database={CI_DATABASE}; ci_session={CI_SESSION}"
+
+
 @app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
     await message.reply("Welcome to the Book Downloader Bot!\nSend /download to start downloading a book.")
 
+@app.on_message(filters.command("cookie"))
+async def update_cookies(client, message: Message):
+    global CI_DATABASE, CI_SESSION
+    try:
+        args = message.text.split()
+        if len(args) != 3:
+            await message.reply("Invalid command format! Use:\n`/cookie <ci_database> <ci_session>`", parse_mode="markdown")
+            return
+
+        # Update cookies
+        CI_DATABASE = args[1]
+        CI_SESSION = args[2]
+
+        await message.reply("Cookies updated successfully!")
+    except Exception as e:
+        await message.reply(f"An error occurred while updating cookies: {e}")
+    
 # Step 2: Download command
 @app.on_message(filters.command("download"))
 async def download_command(client, message: Message):
@@ -81,7 +108,7 @@ def download_page(page: int, book_id: str, user_folder: str):
     curl_headers = {
         "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
         "accept-language": "en-US,en;q=0.9,hi-IN;q=0.8,hi;q=0.7",
-        "cookie": "ci_database=USE_YOURS; ci_session=USE_YOURS",
+        "cookie": get_cookies(),
         "dnt": "1",
         "priority": "u=2, i",
         "referer": f"https://yctpublication.com/readbook/{book_id}",
