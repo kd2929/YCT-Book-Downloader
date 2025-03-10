@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, UnidentifiedImageError
 import json
 import re
+import PyPDF2
 
 # Bot configurations
 API_ID = "28919717"
@@ -66,7 +67,7 @@ async def cancel_command(client, message: Message):
     user_tasks.pop(user_id, None)
     await message.reply("Your task has been canceled and all temporary data has been deleted.")
 
-@app.on_message(filters.text)
+@app.on_message(filters.text & ~filters.command)
 async def handle_book_id(client, message: Message):
     user_id = message.from_user.id
     if user_id not in user_tasks:
@@ -79,146 +80,151 @@ async def handle_book_id(client, message: Message):
         user_task["status"] = "downloading"
         await download_book(client, message, user_task)
 
+def download_page(page, book_id, user_folder):
+    try:
+        page_url = f"https://yctpublication.com/getPage/{book_id}/{page}"
+        output_file = f"{user_folder}{page}.jpg"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Cookie": get_cookies(),
+            "Referer": f"https://yctpublication.com/readbook/{book_id}"
+        }
+        
+        response = requests.get(page_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        with open(output_file, "wb") as f:
+            f.write(response.content)
+            
+        # Verify image
+        with Image.open(output_file) as img:
+            img.verify()
+            return True
+            
+    except Exception as e:
+        print(f"Error downloading page {page}: {str(e)}")
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        return False
+
 async def download_book(client, message, user_task):
     user_id = message.from_user.id
     book_id = user_task["book_id"]
     user_folder = f"downloads/{user_id}/"
-    os.makedirs(user_folder, exist_ok=True)
+    
+    if os.path.exists(user_folder):
+        shutil.rmtree(user_folder)
+    os.makedirs(user_folder)
 
     try:
         # Fetch book details
-        response = requests.get(f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}", headers={"Cookie": get_cookies()})
-        if response.status_code == 200:
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "application/json" in content_type:
-                book_details = response.json()
-                if book_details.get("status"):
-                    book_name = book_details["data"].get("book_name", "Unknown Book").replace(" ", "_")
-                    no_of_pages = int(book_details["data"].get("no_of_pages", 0))
-                else:
-                    raise Exception(f"API Error: {book_details.get('message', 'Unknown error')}")
-            elif "text/html" in content_type:
-                text_content = response.text
-                json_match = re.search(r'({.*})', text_content)
-                if json_match:
-                    book_details = json.loads(json_match.group(0))
-                    if book_details.get("status"):
-                        book_name = book_details["data"].get("book_name", "Unknown Book").replace(" ", "_")
-                        no_of_pages = int(book_details["data"].get("no_of_pages", 0))
-                    else:
-                        raise Exception(f"API Error: {book_details.get('message', 'Unknown error')}")
-                else:
-                    raise Exception("Failed to parse JSON from HTML response.")
-            else:
-                raise Exception(f"Unexpected response format: {content_type}")
-        else:
-            raise Exception(f"Failed to fetch book details. HTTP Status: {response.status_code}")
+        headers = {
+            "Cookie": get_cookies(),
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        response = requests.get(
+            f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}",
+            headers=headers,
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        book_details = response.json()
+        if not book_details.get("status"):
+            raise Exception("Invalid book ID or unable to fetch book details")
+            
+        book_name = book_details["data"]["book_name"].replace(" ", "_")
+        no_of_pages = int(book_details["data"]["no_of_pages"])
+        
+        if no_of_pages <= 0:
+            raise Exception("Invalid number of pages")
 
-        if no_of_pages == 0:
-            raise Exception("Invalid number of pages.")
+        status_message = await message.reply(
+            f"📚 Downloading: {book_name}\n"
+            f"📄 Total Pages: {no_of_pages}\n"
+            "⏳ Progress: 0%"
+        )
 
-        stage = await app.send_message(user_id, f"__**Downloading:**__\n\n📕 **Book Name:** {book_name}\n🔖 **Total Pages:** {no_of_pages}\n\n> __**Powered by Team SPY*__")
-
-        image_files = []
+        # Download pages
+        successful_downloads = []
         failed_pages = []
-
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            loop = asyncio.get_event_loop()
-            futures = []
-            for page in range(1, no_of_pages + 1):
-                future = loop.run_in_executor(executor, download_page, page, book_id, user_folder)
-                futures.append(future)
-            results = await asyncio.gather(*futures)
-
-        for page, success in enumerate(results, 1):
-            image_path = f"{user_folder}{page}.jpg"
-            if success:
-                image_files.append(image_path)
+        
+        for page in range(1, no_of_pages + 1):
+            if download_page(page, book_id, user_folder):
+                successful_downloads.append(f"{user_folder}{page}.jpg")
             else:
                 failed_pages.append(page)
+                
+            if page % 5 == 0:
+                progress = (page / no_of_pages) * 100
+                await status_message.edit_text(
+                    f"📚 Downloading: {book_name}\n"
+                    f"📄 Total Pages: {no_of_pages}\n"
+                    f"⏳ Progress: {progress:.1f}%"
+                )
 
-        if not image_files:
-            raise Exception("No valid images were downloaded.")
+        if not successful_downloads:
+            raise Exception("Failed to download any pages")
 
-        await stage.edit("Creating PDFs")
+        await status_message.edit_text("📑 Creating PDF...")
+        
+        # Create PDF
         pdf_path = f"{user_folder}{book_name}.pdf"
-        await create_pdf_from_images(image_files, pdf_path)
+        await create_pdf_from_images(successful_downloads, pdf_path)
+        
+        # Compress PDF
+        await status_message.edit_text("🗜 Compressing PDF...")
         await compress_pdf(pdf_path)
 
-        await stage.edit("__**Uploading**__")
+        # Upload PDF
+        await status_message.edit_text("📤 Uploading PDF...")
         await client.send_document(
-            chat_id=user_id, document=pdf_path, caption=f"Here is your book: {book_name}"
+            chat_id=user_id,
+            document=pdf_path,
+            caption=f"📚 {book_name}\n📄 Pages: {len(successful_downloads)}"
         )
-        await stage.delete()
-
+        
         if failed_pages:
-            await message.reply(f"Warning: Failed to download pages: {failed_pages}")
+            await message.reply(f"⚠️ Failed to download pages: {', '.join(map(str, failed_pages))}")
+            
+        await status_message.delete()
 
     except Exception as e:
-        await message.reply(f"An error occurred: {e}")
+        await message.reply(f"❌ Error: {str(e)}")
+        
     finally:
-        shutil.rmtree(user_folder, ignore_errors=True)
+        if os.path.exists(user_folder):
+            shutil.rmtree(user_folder)
         user_tasks.pop(user_id, None)
-
-def download_page(page, book_id, user_folder):
-    page_url = f"https://yctpublication.com/getPage/{book_id}/{page}"
-    output_file = f"{user_folder}{page}.jpg"
-    headers = {
-        "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9,hi-IN;q=0.8,hi;q=0.7",
-        "cookie": get_cookies(),
-        "dnt": "1",
-        "priority": "u=2, i",
-        "referer": f"https://yctpublication.com/readbook/{book_id}",
-        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "image",
-        "sec-fetch-mode": "no-cors",
-        "sec-fetch-site": "same-origin",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    }
-    try:
-        response = requests.get(page_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            with open(output_file, "wb") as f:
-                f.write(response.content)
-            try:
-                with Image.open(output_file) as img:
-                    img.verify()  # Verify if this is a valid image
-                return True
-            except (UnidentifiedImageError, IOError):
-                print(f"Downloaded file is not a valid image: {output_file}")
-                return False
-        else:
-            print(f"Failed to download page {page}. HTTP Status: {response.status_code}")
-            return False
-    except Exception as e:
-        print(f"Error downloading page {page}: {e}")
-        return False
 
 async def create_pdf_from_images(image_paths, output_pdf_path):
     from fpdf import FPDF
+    
     pdf = FPDF()
-    for image_path in image_paths:
+    for image_path in sorted(image_paths, key=lambda x: int(os.path.basename(x).split('.')[0])):
         try:
             pdf.add_page()
             pdf.image(image_path, x=0, y=0, w=210, h=297)
         except Exception as e:
-            print(f"Failed to add image {image_path} to PDF: {e}")
+            print(f"Error adding page to PDF: {str(e)}")
+    
     pdf.output(output_pdf_path)
 
 async def compress_pdf(pdf_path):
     try:
-        with open(pdf_path, "rb") as f:
-            pdf_reader = PyPDF2.PdfReader(f)
-            pdf_writer = PyPDF2.PdfWriter()
-            for page in pdf_reader.pages:
-                pdf_writer.add_page(page)
-            pdf_writer.remove_links()
-            with open(pdf_path, "wb") as out:
-                pdf_writer.write(out)
+        reader = PyPDF2.PdfReader(pdf_path)
+        writer = PyPDF2.PdfWriter()
+        
+        for page in reader.pages:
+            writer.add_page(page)
+            
+        with open(pdf_path, "wb") as f:
+            writer.write(f)
+            
     except Exception as e:
-        print(f"Compression failed: {e}")
+        print(f"Error compressing PDF: {str(e)}")
 
-app.run()
+if __name__ == "__main__":
+    app.run()
