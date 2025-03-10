@@ -21,8 +21,8 @@ app = Client("book_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=
 user_tasks = {}
 executor = ThreadPoolExecutor(max_workers=20)
 
-CI_DATABASE = os.getenv("CI_DATABASE", "286dbaf9a7ca6c62546cddfac56833b3860f5c53")
-CI_SESSION = os.getenv("CI_SESSION", "880b1fcdd0d4b9e6cc88f979e217e3136184665b")
+CI_DATABASE = os.getenv("CI_DATABASE", "92d3dfe1c081962d049f74e00a42f687b337d0fa")
+CI_SESSION = os.getenv("CI_SESSION", "d36ff1d6f87aa84e1a05eda0357972303d44222d")
 
 def get_cookies():
     return f"ci_database={CI_DATABASE}; ci_session={CI_SESSION}"
