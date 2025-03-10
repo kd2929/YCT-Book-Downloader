@@ -4,12 +4,10 @@ import asyncio
 import requests
 from pyrogram import Client, filters
 from pyrogram.types import Message
-import json
-import re
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, UnidentifiedImageError
-from fpdf import FPDF
-import PyPDF2
+import json
+import re
 
 # Bot configurations
 API_ID = "28919717"
@@ -88,7 +86,8 @@ async def download_book(client, message, user_task):
     os.makedirs(user_folder, exist_ok=True)
 
     try:
-        response = requests.get(f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}")
+        # Fetch book details
+        response = requests.get(f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}", headers={"Cookie": get_cookies()})
         if response.status_code == 200:
             content_type = response.headers.get("Content-Type", "").lower()
             if "application/json" in content_type:
@@ -129,18 +128,12 @@ async def download_book(client, message, user_task):
             for page in range(1, no_of_pages + 1):
                 future = loop.run_in_executor(executor, download_page, page, book_id, user_folder)
                 futures.append(future)
-            await asyncio.gather(*futures)
+            results = await asyncio.gather(*futures)
 
-        for page in range(1, no_of_pages + 1):
+        for page, success in enumerate(results, 1):
             image_path = f"{user_folder}{page}.jpg"
-            if os.path.exists(image_path):
-                try:
-                    with Image.open(image_path) as img:
-                        img.verify()
-                        image_files.append(image_path)
-                except (UnidentifiedImageError, IOError):
-                    failed_pages.append(page)
-                    continue
+            if success:
+                image_files.append(image_path)
             else:
                 failed_pages.append(page)
 
@@ -190,27 +183,30 @@ def download_page(page, book_id, user_folder):
         if response.status_code == 200:
             with open(output_file, "wb") as f:
                 f.write(response.content)
-            return True
+            try:
+                with Image.open(output_file) as img:
+                    img.verify()  # Verify if this is a valid image
+                return True
+            except (UnidentifiedImageError, IOError):
+                print(f"Downloaded file is not a valid image: {output_file}")
+                return False
         else:
+            print(f"Failed to download page {page}. HTTP Status: {response.status_code}")
             return False
     except Exception as e:
         print(f"Error downloading page {page}: {e}")
         return False
 
 async def create_pdf_from_images(image_paths, output_pdf_path):
-    pdf_writer = PyPDF2.PdfWriter()
+    from fpdf import FPDF
+    pdf = FPDF()
     for image_path in image_paths:
         try:
-            with Image.open(image_path) as img:
-                rgb_image = img.convert("RGB")
-                temp_path = f"{image_path}.temp.jpg"
-                rgb_image.save(temp_path, "JPEG", quality=85)
-                pdf_page = PyPDF2.PdfReader(temp_path).pages[0]
-                pdf_writer.add_page(pdf_page)
-        except (UnidentifiedImageError, IndexError):
-            continue
-    with open(output_pdf_path, "wb") as f:
-        pdf_writer.write(f)
+            pdf.add_page()
+            pdf.image(image_path, x=0, y=0, w=210, h=297)
+        except Exception as e:
+            print(f"Failed to add image {image_path} to PDF: {e}")
+    pdf.output(output_pdf_path)
 
 async def compress_pdf(pdf_path):
     try:
