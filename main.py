@@ -4,37 +4,28 @@ import asyncio
 import requests
 from pyrogram import Client, filters
 from pyrogram.types import Message
-import img2pdf  # For PDF creation from images
 import json
-import re  # For extracting JSON from HTML
+import re
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, UnidentifiedImageError
 from fpdf import FPDF
+import PyPDF2
 
 # Bot configurations
-API_ID = "28919717"  # Your API_ID
-API_HASH = "e4b11bcdf5ce2ca405cf2a8e84dfed24"  # Your API_HASH
-BOT_TOKEN = "6126914317:AAH0Yl8yvgDbsL8yO72ncUSxi5RKkfVSEhM"  # Your BOT_TOKEN
+API_ID = "28919717"
+API_HASH = "e4b11bcdf5ce2ca405cf2a8e84dfed24"
+BOT_TOKEN = "6126914317:AAH0Yl8yvgDbsL8yO72ncUSxi5RKkfVSEhM"
 
-# Initialize the bot
 app = Client("book_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Store ongoing tasks
 user_tasks = {}
+executor = ThreadPoolExecutor(max_workers=20)
 
-# ThreadPoolExecutor for parallel downloads
-executor = ThreadPoolExecutor(max_workers=5)
-
-# Step 1: Start command
-
-# Cookie configuration using environment variables
 CI_DATABASE = os.getenv("CI_DATABASE", "286dbaf9a7ca6c62546cddfac56833b3860f5c53")
 CI_SESSION = os.getenv("CI_SESSION", "880b1fcdd0d4b9e6cc88f979e217e3136184665b")
 
-
 def get_cookies():
     return f"ci_database={CI_DATABASE}; ci_session={CI_SESSION}"
-
 
 @app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
@@ -49,15 +40,12 @@ async def update_cookies(client, message: Message):
             await message.reply("Invalid command format! Use:\n`/cookie <ci_database> <ci_session>`", parse_mode="markdown")
             return
 
-        # Update cookies
         CI_DATABASE = args[1]
         CI_SESSION = args[2]
-
         await message.reply("Cookies updated successfully!")
     except Exception as e:
         await message.reply(f"An error occurred while updating cookies: {e}")
-    
-# Step 2: Download command
+
 @app.on_message(filters.command("download"))
 async def download_command(client, message: Message):
     user_id = message.from_user.id
@@ -68,7 +56,6 @@ async def download_command(client, message: Message):
     user_tasks[user_id] = {"status": "awaiting_book_id"}
     await message.reply("Please send the book ID to start downloading.")
 
-# Cancel command
 @app.on_message(filters.command("cancel"))
 async def cancel_command(client, message: Message):
     user_id = message.from_user.id
@@ -76,13 +63,11 @@ async def cancel_command(client, message: Message):
         await message.reply("You don't have any ongoing tasks.")
         return
 
-    # Clean up and stop task
     user_folder = f"downloads/{user_id}/"
     shutil.rmtree(user_folder, ignore_errors=True)
     user_tasks.pop(user_id, None)
     await message.reply("Your task has been canceled and all temporary data has been deleted.")
 
-# Step 3: Handle book ID
 @app.on_message(filters.text)
 async def handle_book_id(client, message: Message):
     user_id = message.from_user.id
@@ -94,18 +79,98 @@ async def handle_book_id(client, message: Message):
         book_id = message.text.strip()
         user_task["book_id"] = book_id
         user_task["status"] = "downloading"
+        await download_book(client, message, user_task)
 
-        # Get book details from API
-        status = await message.reply("Got it! Fetching book details...")
-        await download_book(client, status, message, user_task)
+async def download_book(client, message, user_task):
+    user_id = message.from_user.id
+    book_id = user_task["book_id"]
+    user_folder = f"downloads/{user_id}/"
+    os.makedirs(user_folder, exist_ok=True)
 
-# Step 4: Download book pages and process
-def download_page(page: int, book_id: str, user_folder: str):
+    try:
+        response = requests.get(f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}")
+        if response.status_code == 200:
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "application/json" in content_type:
+                book_details = response.json()
+                if book_details.get("status"):
+                    book_name = book_details["data"].get("book_name", "Unknown Book").replace(" ", "_")
+                    no_of_pages = int(book_details["data"].get("no_of_pages", 0))
+                else:
+                    raise Exception(f"API Error: {book_details.get('message', 'Unknown error')}")
+            elif "text/html" in content_type:
+                text_content = response.text
+                json_match = re.search(r'({.*})', text_content)
+                if json_match:
+                    book_details = json.loads(json_match.group(0))
+                    if book_details.get("status"):
+                        book_name = book_details["data"].get("book_name", "Unknown Book").replace(" ", "_")
+                        no_of_pages = int(book_details["data"].get("no_of_pages", 0))
+                    else:
+                        raise Exception(f"API Error: {book_details.get('message', 'Unknown error')}")
+                else:
+                    raise Exception("Failed to parse JSON from HTML response.")
+            else:
+                raise Exception(f"Unexpected response format: {content_type}")
+        else:
+            raise Exception(f"Failed to fetch book details. HTTP Status: {response.status_code}")
+
+        if no_of_pages == 0:
+            raise Exception("Invalid number of pages.")
+
+        stage = await app.send_message(user_id, f"__**Downloading:**__\n\n📕 **Book Name:** {book_name}\n🔖 **Total Pages:** {no_of_pages}\n\n> __**Powered by Team SPY*__")
+
+        image_files = []
+        failed_pages = []
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            loop = asyncio.get_event_loop()
+            futures = []
+            for page in range(1, no_of_pages + 1):
+                future = loop.run_in_executor(executor, download_page, page, book_id, user_folder)
+                futures.append(future)
+            await asyncio.gather(*futures)
+
+        for page in range(1, no_of_pages + 1):
+            image_path = f"{user_folder}{page}.jpg"
+            if os.path.exists(image_path):
+                try:
+                    with Image.open(image_path) as img:
+                        img.verify()
+                        image_files.append(image_path)
+                except (UnidentifiedImageError, IOError):
+                    failed_pages.append(page)
+                    continue
+            else:
+                failed_pages.append(page)
+
+        if not image_files:
+            raise Exception("No valid images were downloaded.")
+
+        await stage.edit("Creating PDFs")
+        pdf_path = f"{user_folder}{book_name}.pdf"
+        await create_pdf_from_images(image_files, pdf_path)
+        await compress_pdf(pdf_path)
+
+        await stage.edit("__**Uploading**__")
+        await client.send_document(
+            chat_id=user_id, document=pdf_path, caption=f"Here is your book: {book_name}"
+        )
+        await stage.delete()
+
+        if failed_pages:
+            await message.reply(f"Warning: Failed to download pages: {failed_pages}")
+
+    except Exception as e:
+        await message.reply(f"An error occurred: {e}")
+    finally:
+        shutil.rmtree(user_folder, ignore_errors=True)
+        user_tasks.pop(user_id, None)
+
+def download_page(page, book_id, user_folder):
     page_url = f"https://yctpublication.com/getPage/{book_id}/{page}"
     output_file = f"{user_folder}{page}.jpg"
-    
-    # Setup headers for the request
-    curl_headers = {
+    headers = {
         "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
         "accept-language": "en-US,en;q=0.9,hi-IN;q=0.8,hi;q=0.7",
         "cookie": get_cookies(),
@@ -120,121 +185,44 @@ def download_page(page: int, book_id: str, user_folder: str):
         "sec-fetch-site": "same-origin",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     }
-
-    # Download the page image using requests
-    response = requests.get(page_url, headers=curl_headers)
-    if response.status_code == 200:
-        with open(output_file, "wb") as f:
-            f.write(response.content)
-
-# Step 5: Download book and handle
-async def download_book(client, status, message: Message, user_task: dict):
-    user_id = message.from_user.id
-    book_id = user_task["book_id"]
-    user_folder = f"downloads/{user_id}/"
-    os.makedirs(user_folder, exist_ok=True)
-
     try:
-        # Get book details from API
-        response = requests.get(f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}")
+        response = requests.get(page_url, headers=headers, timeout=10)
         if response.status_code == 200:
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "application/json" in content_type:
-                book_details = response.json()
-                if book_details.get("status"):
-                    book_name = book_details["data"].get("book_name", "Unknown Book").replace(" ", "_")
-                    no_of_pages = int(book_details["data"].get("no_of_pages", 0))
-                else:
-                    raise Exception(f"API returned an error: {book_details.get('message', 'Unknown error')}")
-            elif "text/html" in content_type:
-                text_content = response.text
-                json_match = re.search(r'({.*})', text_content)
-                if json_match:
-                    book_details = json.loads(json_match.group(0))
-                    if book_details.get("status"):
-                        book_name = book_details["data"].get("book_name", "Unknown Book").replace(" ", "_")
-                        no_of_pages = int(book_details["data"].get("no_of_pages", 0))
-                    else:
-                        raise Exception(f"API returned an error: {book_details.get('message', 'Unknown error')}")
-                else:
-                    raise Exception("Failed to parse JSON from HTML response.")
-            else:
-                raise Exception(f"Unexpected response format: {content_type}")
+            with open(output_file, "wb") as f:
+                f.write(response.content)
+            return True
         else:
-            raise Exception(f"Failed to fetch book details. HTTP Status: {response.status_code}")
-
-        if no_of_pages == 0:
-            raise Exception("Invalid number of pages.")
-        await status.delete()
-        stage = await app.send_message(user_id, f"__**Downloading:**__\n\n📕 **Book Name:** {book_name}\n🔖 **Total Pages:** {no_of_pages}\n\n> __**Powered by Team SPY*__")
-
-        # Proceed with image generation and PDF creation
-        image_files = []
-
-        # Use ThreadPoolExecutor for parallel downloads
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            futures = []
-            for page in range(1, no_of_pages + 1):
-                future = loop.run_in_executor(executor, download_page, page, book_id, user_folder)
-                futures.append(future)
-            await asyncio.gather(*futures)
-
-        await stage.edit("Creating PDFs")
-
-        # Create PDF from images using img2pdf
-        pdf_path = f"{user_folder}{book_name}.pdf"
-        await create_pdf_from_images([f"{user_folder}{page}.jpg" for page in range(1, no_of_pages + 1)], pdf_path)
-        await stage.edit("__**Uploading**__")
-        # Send PDF to user
-        await client.send_document(
-            chat_id=user_id, document=pdf_path, caption=f"Here is your book: {book_name}"
-        )
-        await stage.delete()
-
+            return False
     except Exception as e:
-        await message.reply(f"An error occurred: {e}")
-    finally:
-        # Clean up
-        shutil.rmtree(user_folder, ignore_errors=True)
-        user_tasks.pop(user_id, None)
+        print(f"Error downloading page {page}: {e}")
+        return False
 
-# Create PDF from images
 async def create_pdf_from_images(image_paths, output_pdf_path):
-    pdf = FPDF()
-    temp_images = []
+    pdf_writer = PyPDF2.PdfWriter()
+    for image_path in image_paths:
+        try:
+            with Image.open(image_path) as img:
+                rgb_image = img.convert("RGB")
+                temp_path = f"{image_path}.temp.jpg"
+                rgb_image.save(temp_path, "JPEG", quality=85)
+                pdf_page = PyPDF2.PdfReader(temp_path).pages[0]
+                pdf_writer.add_page(pdf_page)
+        except (UnidentifiedImageError, IndexError):
+            continue
+    with open(output_pdf_path, "wb") as f:
+        pdf_writer.write(f)
 
-    try:
-        for image_path in image_paths:
-            try:
-                with Image.open(image_path) as img:
-                    rgb_image = img.convert("RGB")
-                    temp_path = f"{image_path}.temp.jpg"
-                    rgb_image.save(temp_path, "JPEG", quality=85)
-                    temp_images.append(temp_path)
-                    pdf.add_page()
-                    pdf.image(temp_path, x=10, y=10, w=190)
-            except UnidentifiedImageError:
-                continue
-
-        pdf.output(output_pdf_path)
-        await compress_pdf(output_pdf_path)
-
-    finally:
-        for temp_path in temp_images:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-# Compress PDF
 async def compress_pdf(pdf_path):
-    compressed_pdf_path = pdf_path.replace(".pdf", "_compressed.pdf")
     try:
-        with open(pdf_path, "rb") as pdf:
-            with open(compressed_pdf_path, "wb") as compressed:
-                compressed.write(pdf.read())  # Placeholder for actual compression logic
-        os.replace(compressed_pdf_path, pdf_path)
+        with open(pdf_path, "rb") as f:
+            pdf_reader = PyPDF2.PdfReader(f)
+            pdf_writer = PyPDF2.PdfWriter()
+            for page in pdf_reader.pages:
+                pdf_writer.add_page(page)
+            pdf_writer.remove_links()
+            with open(pdf_path, "wb") as out:
+                pdf_writer.write(out)
     except Exception as e:
         print(f"Compression failed: {e}")
 
-# Run the bot
 app.run()
