@@ -67,7 +67,7 @@ async def cancel_command(client, message: Message):
     user_tasks.pop(user_id, None)
     await message.reply("Your task has been canceled and all temporary data has been deleted.")
 
-@app.on_message(filters.text & ~filters.command)
+@app.on_message(filters.text & ~filters.command("start") & ~filters.command("download") & ~filters.command("cancel") & ~filters.command("cookie"))
 async def handle_book_id(client, message: Message):
     user_id = message.from_user.id
     if user_id not in user_tasks:
