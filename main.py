@@ -83,14 +83,13 @@ async def handle_book_id(client, message: Message):
 def download_page(page, book_id, user_folder):
 
     try:
-        page_url = f"https://yctbooksprime.com/ebook/{book_id}/view-pdf?pageNumber={page}"
+         page_url = f"https://yctpublication.com/getPage/{book_id}/{page}"
         output_file = f"{user_folder}{page}.jpg"
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Cookie": get_cookies(),
-            "Referer": f"https://yctbooksprime.com/ebook/{book_id}"
-        }
+            "Referer": f"https://yctpublication.com/readbook/{book_id}"        }
         
         response = requests.get(page_url, headers=headers, timeout=30)
         response.raise_for_status()
