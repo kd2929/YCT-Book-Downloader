@@ -11,9 +11,9 @@ import re
 import PyPDF2
 
 # Bot configurations
-API_ID = "28919717"
-API_HASH = "e4b11bcdf5ce2ca405cf2a8e84dfed24"
-BOT_TOKEN = "6126914317:AAH0Yl8yvgDbsL8yO72ncUSxi5RKkfVSEhM"
+API_ID = "24250238"
+API_HASH = "cb3f118ce5553dc140127647edcf3720"
+BOT_TOKEN = "6289889847:AAHRaFFoLLkxdPCEBGJhWYVjKaCcEVXIhmM"
 
 app = Client("book_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
