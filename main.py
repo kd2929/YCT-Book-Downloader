@@ -125,7 +125,7 @@ async def download_book(client, message, user_task):
         }
         
         response = requests.get(
-            f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}",
+            f"https://yctbooksprime.com/ebook/{book_id}",
             headers=headers,
             timeout=30
         )
