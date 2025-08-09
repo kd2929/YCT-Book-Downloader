@@ -81,8 +81,9 @@ async def handle_book_id(client, message: Message):
         await download_book(client, message, user_task)
 
 def download_page(page, book_id, user_folder):
-    
-    try:page_url = f"https://yctbooksprime.com/ebook/{book_id}/view-pdf?pageNumber={page}"
+
+    try:
+        page_url = f"https://yctbooksprime.com/ebook/{book_id}/view-pdf?pageNumber={page}"
         output_file = f"{user_folder}{page}.jpg"
         
         headers = {
