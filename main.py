@@ -9,9 +9,9 @@ from fpdf import FPDF
 import re, html as html_lib, json
 
 # ====== BOT CONFIG ======
-API_ID = 123456             # अपना Telegram API_ID डालें
-API_HASH = "your_api_hash"  # अपना API_HASH डालें
-BOT_TOKEN = "your_bot_token"  # अपना Bot Token डालें
+API_ID = 24250238            # अपना Telegram API_ID डालें
+API_HASH = "cb3f118ce5553dc140127647edcf3720"  # अपना API_HASH डालें
+BOT_TOKEN = "6289889847:AAHRaFFoLLkxdPCEBGJhWYVjKaCcEVXIhmM"  # अपना Bot Token डालें
 
 app = Client("yct_booksprime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
