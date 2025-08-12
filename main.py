@@ -1,230 +1,203 @@
 import os
 import shutil
 import asyncio
-import requests
+import aiohttp
+import aiofiles
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from concurrent.futures import ThreadPoolExecutor
-from PIL import Image, UnidentifiedImageError
-import json
-import re
-import PyPDF2
+from fpdf import FPDF
+import re, html as html_lib, json
 
-# Bot configurations
-API_ID = "24250238"
-API_HASH = "cb3f118ce5553dc140127647edcf3720"
-BOT_TOKEN = "6289889847:AAHRaFFoLLkxdPCEBGJhWYVjKaCcEVXIhmM"
+# ====== BOT CONFIG ======
+API_ID = 123456             # अपना Telegram API_ID डालें
+API_HASH = "your_api_hash"  # अपना API_HASH डालें
+BOT_TOKEN = "your_bot_token"  # अपना Bot Token डालें
 
-app = Client("book_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("yct_booksprime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# ====== GLOBAL STORAGE ======
 user_tasks = {}
-executor = ThreadPoolExecutor(max_workers=20)
+XSRF_TOKEN = ""
+YCT_SESSION = ""
 
-CI_DATABASE = os.getenv("CI_DATABASE", "92d3dfe1c081962d049f74e00a42f687b337d0fa")
-CI_SESSION = os.getenv("CI_SESSION", "d36ff1d6f87aa84e1a05eda0357972303d44222d")
-
-def get_cookies():
-    return f"ci_database={CI_DATABASE}; ci_session={CI_SESSION}"
+# ====== BOT COMMANDS ======
 
 @app.on_message(filters.command("start"))
-async def start_command(client, message: Message):
-    await message.reply("Welcome to the Book Downloader Bot!\nSend /download to start downloading a book.")
+async def start_cmd(_, m: Message):
+    await m.reply(
+        "📚 **YCT Books Prime Downloader Bot**\n\n"
+        "1️⃣ `/cookie <XSRF-TOKEN> <yct_session>` - Cookies सेट करो\n"
+        "2️⃣ `/download` - Book download शुरू करो\n"
+        "3️⃣ `/cancel` - Current task cancel करो"
+    )
 
 @app.on_message(filters.command("cookie"))
-async def update_cookies(client, message: Message):
-    global CI_DATABASE, CI_SESSION
-    try:
-        args = message.text.split()
-        if len(args) != 3:
-            await message.reply("Invalid command format! Use:\n`/cookie <ci_database> <ci_session>`", parse_mode="markdown")
-            return
-
-        CI_DATABASE = args[1]
-        CI_SESSION = args[2]
-        await message.reply("Cookies updated successfully!")
-    except Exception as e:
-        await message.reply(f"An error occurred while updating cookies: {e}")
-
-@app.on_message(filters.command("download"))
-async def download_command(client, message: Message):
-    user_id = message.from_user.id
-    if user_id in user_tasks:
-        await message.reply("You already have an ongoing task. Please wait or send /cancel to stop it.")
-        return
-
-    user_tasks[user_id] = {"status": "awaiting_book_id"}
-    await message.reply("Please send the book ID to start downloading.")
+async def cookie_cmd(_, m: Message):
+    global XSRF_TOKEN, YCT_SESSION
+    args = m.text.split()
+    if len(args) != 3:
+        return await m.reply("❌ Usage: `/cookie <XSRF-TOKEN> <yct_session>`")
+    XSRF_TOKEN, YCT_SESSION = args[1], args[2]
+    await m.reply("✅ Cookies updated successfully!")
 
 @app.on_message(filters.command("cancel"))
-async def cancel_command(client, message: Message):
-    user_id = message.from_user.id
-    if user_id not in user_tasks:
-        await message.reply("You don't have any ongoing tasks.")
+async def cancel_cmd(_, m: Message):
+    uid = m.from_user.id
+    if uid in user_tasks:
+        user_tasks.pop(uid, None)
+        shutil.rmtree(f"downloads/{uid}", ignore_errors=True)
+        await m.reply("🛑 Task cancelled.")
+    else:
+        await m.reply("ℹ️ कोई active task नहीं है।")
+
+@app.on_message(filters.command("download"))
+async def download_cmd(_, m: Message):
+    uid = m.from_user.id
+    if not XSRF_TOKEN or not YCT_SESSION:
+        return await m.reply("❌ पहले `/cookie` command से cookies सेट करें।")
+    if uid in user_tasks:
+        return await m.reply("⚠️ एक task already चल रहा है।")
+
+    user_tasks[uid] = {"status": "awaiting_book_id"}
+    await m.reply("📖 Book ID भेजें...")
+
+@app.on_message(filters.text & ~filters.command(["start", "cookie", "cancel", "download"]))
+async def handle_book_id(_, m: Message):
+    uid = m.from_user.id
+    if uid not in user_tasks or user_tasks[uid]["status"] != "awaiting_book_id":
         return
+    book_id = m.text.strip()
+    user_tasks[uid]["status"] = "downloading"
+    await download_book(m, book_id)
 
-    user_folder = f"downloads/{user_id}/"
-    shutil.rmtree(user_folder, ignore_errors=True)
-    user_tasks.pop(user_id, None)
-    await message.reply("Your task has been canceled and all temporary data has been deleted.")
+# ====== CORE FUNCTIONS ======
 
-@app.on_message(filters.text & ~filters.command("start") & ~filters.command("download") & ~filters.command("cancel") & ~filters.command("cookie"))
-async def handle_book_id(client, message: Message):
-    user_id = message.from_user.id
-    if user_id not in user_tasks:
-        return
+async def download_book(m: Message, book_id: str):
+    uid = m.from_user.id
+    temp_dir = f"downloads/{uid}/"
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    os.makedirs(temp_dir, exist_ok=True)
 
-    user_task = user_tasks[user_id]
-    if user_task["status"] == "awaiting_book_id":
-        book_id = message.text.strip()
-        user_task["book_id"] = book_id
-        user_task["status"] = "downloading"
-        await download_book(client, message, user_task)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Cookie": f"XSRF-TOKEN={XSRF_TOKEN}; yct_session={YCT_SESSION}",
+        "Referer": f"https://yctbooksprime.com/ebook/{book_id}/view-pdf"
+    }
 
-def download_page(page, book_id, user_folder):
+    async with aiohttp.ClientSession(headers=headers) as session:
+        # STEP 1: Get Livewire payload
+        payload = await build_livewire_payload(session, book_id)
+        if not payload:
+            user_tasks.pop(uid, None)
+            return await m.reply("❌ Book details fetch नहीं हो सके।")
 
-    try:
-         page_url = f"https://yctpublication.com/getPage/{book_id}/{page}"
-        output_file = f"{user_folder}{page}.jpg"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Cookie": get_cookies(),
-            "Referer": f"https://yctpublication.com/readbook/{book_id}"        }
-        
-        response = requests.get(page_url, headers=headers, timeout=30)
-        response.raise_for_status()
-        
-        with open(output_file, "wb") as f:
-            f.write(response.content)
-            
-        # Verify image
-        with Image.open(output_file) as img:
-            img.verify()
-            return True
-            
-    except Exception as e:
-        print(f"Error downloading page {page}: {str(e)}")
-        if os.path.exists(output_file):
-            os.remove(output_file)
-        return False
+        # STEP 2: Livewire POST to get total pages
+        async with session.post("https://yctbooksprime.com/livewire/update", json=payload) as resp:
+            if resp.status != 200:
+                user_tasks.pop(uid, None)
+                return await m.reply("❌ Livewire request failed.")
+            data = await resp.json()
+            try:
+                no_pages = int(eval(data["components"][0]["snapshot"])["data"]["no_of_pages"])
+            except:
+                user_tasks.pop(uid, None)
+                return await m.reply("❌ Total pages पढ़ने में error।")
 
-async def download_book(client, message, user_task):
-    user_id = message.from_user.id
-    book_id = user_task["book_id"]
-    user_folder = f"downloads/{user_id}/"
-    
-    if os.path.exists(user_folder):
-        shutil.rmtree(user_folder)
-    os.makedirs(user_folder)
+        status_msg = await m.reply(f"📚 Downloading Book ID: {book_id}\n📄 Pages: {no_pages}\n⏳ Progress: 0%")
 
-    try:
-        # Fetch book details
-        headers = {
-            "Cookie": get_cookies(),
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        
-        response = requests.get(
-            f"https://yctpublication.com/master/api/MasterController/bookdetails?bookid={book_id}",
-            headers=headers,
-            timeout=30
-        )
-        response.raise_for_status()
-        
-        book_details = response.json()
-        if not book_details.get("status"):
-            raise Exception("Invalid book ID or unable to fetch book details")
-            
-        book_name = book_details["data"]["book_name"].replace(" ", "_")
-        no_of_pages = int(book_details["data"]["no_of_pages"])
-        
-        if no_of_pages <= 0:
-            raise Exception("Invalid number of pages")
-
-        status_message = await message.reply(
-            f"📚 Downloading: {book_name}\n"
-            f"📄 Total Pages: {no_of_pages}\n"
-            "⏳ Progress: 0%"
-        )
-
-        # Download pages
-        successful_downloads = []
-        failed_pages = []
-        
-        for page in range(1, no_of_pages + 1):
-            if download_page(page, book_id, user_folder):
-                successful_downloads.append(f"{user_folder}{page}.jpg")
+        # STEP 3: Download pages with retry
+        successful, failed = [], []
+        for page in range(1, no_pages + 1):
+            ok = await try_download_page(session, book_id, page, temp_dir)
+            if ok:
+                successful.append(ok)
             else:
-                failed_pages.append(page)
-                
-            if page % 5 == 0:
-                progress = (page / no_of_pages) * 100
-                await status_message.edit_text(
-                    f"📚 Downloading: {book_name}\n"
-                    f"📄 Total Pages: {no_of_pages}\n"
-                    f"⏳ Progress: {progress:.1f}%"
-                )
+                failed.append(page)
 
-        if not successful_downloads:
-            raise Exception("Failed to download any pages")
+            # Progress update हर 5 pages पर
+            if page % 5 == 0 or page == no_pages:
+                progress = (page / no_pages) * 100
+                await status_msg.edit(f"📚 Downloading Book ID: {book_id}\n📄 Pages: {no_pages}\n⏳ Progress: {progress:.1f}%")
 
-        await status_message.edit_text("📑 Creating PDF...")
-        
-        # Create PDF
-        pdf_path = f"{user_folder}{book_name}.pdf"
-        await create_pdf_from_images(successful_downloads, pdf_path)
-        
-        # Compress PDF
-        await status_message.edit_text("🗜 Compressing PDF...")
-        await compress_pdf(pdf_path)
+        # STEP 4: Retry failed pages
+        if failed:
+            retry_failed = []
+            for page in failed:
+                ok = await try_download_page(session, book_id, page, temp_dir, retries=3)
+                if ok:
+                    successful.append(ok)
+                else:
+                    retry_failed.append(page)
+            failed = retry_failed
 
-        # Upload PDF
-        await status_message.edit_text("📤 Uploading PDF...")
-        await client.send_document(
-            chat_id=user_id,
-            document=pdf_path,
-            caption=f"📚 {book_name}\n📄 Pages: {len(successful_downloads)}"
-        )
-        
-        if failed_pages:
-            await message.reply(f"⚠️ Failed to download pages: {', '.join(map(str, failed_pages))}")
-            
-        await status_message.delete()
+        if not successful:
+            user_tasks.pop(uid, None)
+            return await status_msg.edit("❌ No pages downloaded.")
 
-    except Exception as e:
-        await message.reply(f"❌ Error: {str(e)}")
-        
-    finally:
-        if os.path.exists(user_folder):
-            shutil.rmtree(user_folder)
-        user_tasks.pop(user_id, None)
+        # STEP 5: Create PDF
+        pdf_path = os.path.join(temp_dir, f"{book_id}.pdf")
+        await create_pdf(successful, pdf_path)
 
-async def create_pdf_from_images(image_paths, output_pdf_path):
-    from fpdf import FPDF
-    
-    pdf = FPDF()
-    for image_path in sorted(image_paths, key=lambda x: int(os.path.basename(x).split('.')[0])):
-        try:
-            pdf.add_page()
-            pdf.image(image_path, x=0, y=0, w=210, h=297)
-        except Exception as e:
-            print(f"Error adding page to PDF: {str(e)}")
-    
-    pdf.output(output_pdf_path)
+        # STEP 6: Send PDF
+        caption = f"📚 Book ID: {book_id}\n📄 Pages: {len(successful)}"
+        if failed:
+            caption += f"\n⚠️ Failed pages: {', '.join(map(str, failed))}"
+        await m.reply_document(pdf_path, caption=caption)
 
-async def compress_pdf(pdf_path):
+    user_tasks.pop(uid, None)
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    await status_msg.delete()
+
+async def build_livewire_payload(session, book_id):
+    async with session.get(f"https://yctbooksprime.com/ebook/{book_id}") as resp:
+        if resp.status != 200:
+            return None
+        html = await resp.text()
+        token_match = re.search(r'name="csrf-token" content="(.*?)"', html)
+        snap_match = re.search(r'wire:snapshot="(.*?)"', html)
+        if not token_match or not snap_match:
+            return None
+        _token = token_match.group(1)
+        snapshot = html_lib.unescape(snap_match.group(1))
+        payload = {
+            "_token": _token,
+            "components": [
+                {
+                    "snapshot": snapshot,
+                    "updates": {},
+                    "calls": [{"path": "", "method": "incrementPage", "params": []}]
+                }
+            ]
+        }
+        return payload
+
+async def try_download_page(session, book_id, page, folder, retries=1):
+    for attempt in range(retries):
+        path = await download_page(session, book_id, page, folder)
+        if path:
+            return path
+    return None
+
+async def download_page(session, book_id, page, folder):
     try:
-        reader = PyPDF2.PdfReader(pdf_path)
-        writer = PyPDF2.PdfWriter()
-        
-        for page in reader.pages:
-            writer.add_page(page)
-            
-        with open(pdf_path, "wb") as f:
-            writer.write(f)
-            
-    except Exception as e:
-        print(f"Error compressing PDF: {str(e)}")
+        url = f"https://yctbooksprime.com/ebook/temp-ebook/{book_id}/?pageNumber={page}"
+        out_path = os.path.join(folder, f"{page}.jpg")
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            f = await aiofiles.open(out_path, "wb")
+            await f.write(await resp.read())
+            await f.close()
+        return out_path
+    except:
+        return None
+
+async def create_pdf(images, out_pdf):
+    pdf = FPDF()
+    for img in sorted(images, key=lambda x: int(os.path.basename(x).split('.')[0])):
+        pdf.add_page()
+        pdf.image(img, x=0, y=0, w=210, h=297)
+    pdf.output(out_pdf)
 
 if __name__ == "__main__":
     app.run()
